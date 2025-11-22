@@ -1,14 +1,9 @@
 <#
 .SYNOPSIS
-  instalar aplicaciones (Google Chrome, Brave) en sistemas sin Winget.
-  Utiliza Invoke-WebRequest para descargar instaladores y comandos de instalación silenciosa.
-
+  Script de Instalación de Packs personalizado para entornos Enterprise.
+  Se auto-eleva a Administrador y se ejecuta en una nueva ventana con un estilo llamativo.
 .DESCRIPTION
-  Ofrece un menú para seleccionar qué aplicaciones instalar o para instalar todas.
-  Gestiona la descarga, ejecución silenciosa del instalador y limpieza posterior.
-
-.NOTES
-  Debe ejecutarse como Administrador. Los IDs de las aplicaciones ahora son las URLs de descarga.
+  Instala Google Chrome (Estándar Standalone) y Brave Browser de forma silenciosa.
 #>
 
 function Show-Menu {
@@ -18,19 +13,18 @@ function Show-Menu {
     )
 
     Clear-Host
-    Write-Host "--- 🛠️ Menú de Instalación de Aplicaciones (Modo Enterprise) ---" -ForegroundColor Cyan
-    Write-Host "Selecciona las aplicaciones que deseas instalar (separadas por comas), o elige una opción predefinida."
+    Write-Host "--- 🛠️ Menú de Instalación de Aplicaciones ---" -ForegroundColor Cyan
+    Write-Host "Selecciona los números de las aplicaciones a instalar (ej: 1, 3), o una opción predefinida."
     Write-Host "----------------------------------------------------"
 
     $i = 1
-    # Mostramos los nombres amigables para el usuario
     foreach ($FriendlyName in $Applications.Values) {
-        Write-Host "$($i). Instalar $($FriendlyName)"
+        Write-Host "$($i). Instalar $($FriendlyName)" -ForegroundColor Green
         $i++
     }
     
     Write-Host "----------------------------------------------------"
-    Write-Host "A. Instalar **Todas** las aplicaciones listadas." -ForegroundColor Green
+    Write-Host "A. Instalar **Todas** las aplicaciones listadas." -ForegroundColor Yellow
     Write-Host "S. **Salir** del script." -ForegroundColor Red
     Write-Host "----------------------------------------------------"
     
@@ -38,7 +32,7 @@ function Show-Menu {
     return $Choice.Trim()
 }
 
-function Install-Application {
+function Invoke-SilentInstall {
     param(
         [Parameter(Mandatory=$true)]
         [string]$DownloadUrl,
@@ -47,18 +41,19 @@ function Install-Application {
         [Parameter(Mandatory=$true)]
         [string]$InstallerFileName,
         [Parameter(Mandatory=$true)]
-        [string]$InstallCommand # El comando silencioso específico para el instalador
+        [string]$InstallArguments # Solo argumentos silenciosos
     )
 
     $DownloadPath = Join-Path -Path $env:TEMP -ChildPath $InstallerFileName
+    $ExecutablePath = $DownloadPath # Para EXE, el ejecutable es el archivo descargado
     
-    Write-Host "👉 Iniciando instalación de $($FriendlyName)..." -ForegroundColor Yellow
+    Write-Host " "
+    Write-Host "✨ Procesando: $($FriendlyName)..." -ForegroundColor Cyan
     
     # 1. Descargar el instalador
-    Write-Host "   Descargando $($FriendlyName) desde $($DownloadUrl)..."
+    Write-Host "   > Descargando..." -ForegroundColor Gray
     try {
-        # Usamos iwr para la descarga. El Header es importante para algunos servidores.
-        Invoke-WebRequest -Uri $DownloadUrl -OutFile $DownloadPath -Headers @{"User-Agent"="PowerShell Script Downloader"}
+        Invoke-WebRequest -Uri $DownloadUrl -OutFile $DownloadPath -UseBasicParsing -Headers @{"User-Agent"="Custom Installer Script"} -ErrorAction Stop
     }
     catch {
         Write-Host "❌ Error al descargar $($FriendlyName): $($_.Exception.Message)" -ForegroundColor Red
@@ -66,86 +61,88 @@ function Install-Application {
     }
 
     # 2. Ejecutar la instalación silenciosa
-    Write-Host "   Ejecutando instalación silenciosa..."
+    Write-Host "   > Ejecutando instalador silencioso..." -ForegroundColor Gray
     try {
-        # El comando 'Start-Process' permite ejecutar un proceso externo y esperar a que termine.
-        Start-Process -FilePath $InstallCommand -ArgumentList $DownloadPath -Wait -NoNewWindow
+        # Ejecutamos el archivo descargado ($ExecutablePath) con los argumentos silenciosos
+        Start-Process -FilePath $ExecutablePath -ArgumentList $InstallArguments -Wait -NoNewWindow -ErrorAction Stop
         
-        Write-Host "✅ $($FriendlyName) se instaló correctamente." -ForegroundColor Green
+        Write-Host "✅ $($FriendlyName) se instaló con ÉXITO." -ForegroundColor Green
     }
     catch {
-        Write-Host "⚠️ Fallo al ejecutar el instalador de $($FriendlyName): $($_.Exception.Message)" -ForegroundColor DarkYellow
+        Write-Host "⚠️ Fallo al ejecutar el instalador de $($FriendlyName). Requiere permisos de Administrador." -ForegroundColor Yellow
     }
     
-    # 3. Limpieza: Eliminar el instalador descargado
-    Write-Host "   Limpiando instalador descargado: $($DownloadPath)..."
+    # 3. Limpieza: Eliminar el instalador
+    Write-Host "   > Limpiando..." -ForegroundColor Gray
     try {
-        Remove-Item -Path $DownloadPath -Force
-        Write-Host "   Limpieza completa." -ForegroundColor Green
+        Remove-Item -Path $DownloadPath -Force -ErrorAction SilentlyContinue
     }
-    catch {
-        Write-Host "⚠️ No se pudo eliminar el archivo: $($DownloadPath)" -ForegroundColor DarkYellow
-    }
-    Write-Host "---"
+    catch {}
+    Write-Host "---" -ForegroundColor DarkGray
 }
 
-# --- Definición de Aplicaciones ---
-# Formato: 'URL_de_Descarga' = @{Name='Nombre Amigable'; File='Nombre de archivo'; Command='Comando de Ejecución'}
-$AppList = @{
-    # Google Chrome (Usamos el MSI Enterprise para instalación silenciosa limpia)
-    'https://dl.google.com/dl/chrome/install/googlechromestandaloneenterprise64.msi' = @{
-        Name='Google Chrome (Enterprise)'
-        File='GoogleChromeEnterprise.msi'
-        Command='msiexec.exe /i' # Comando MSI para instalar
-        Arguments='/qn /norestart' # Parámetros silenciosos (msiexec.exe /i <file.msi> /qn /norestart)
+function Start-InstallerPacks {
+    # 1. Comprobación de Administrador y Auto-Elevación
+    if (-not ([Security.Principal.WindowsIdentity]::GetCurrent().Groups -match 'S-1-5-32-544')) {
+        Write-Host "⚠️ Ejecutando elevación de permisos (RunAs)..." -ForegroundColor Yellow
+        $scriptPath = $MyInvocation.MyCommand.Path
+        
+        # Ejecutar el script en una nueva ventana de PowerShell como Administrador
+        Start-Process -FilePath 'powershell.exe' -ArgumentList "-File `"$scriptPath`" -elevated" -Verb RunAs
+        exit
     }
     
-    # Brave Browser (Descargamos el instalador que gestiona su propia instalación)
-    'https://referrals.brave.com/latest/BraveBrowserSetup-Standalone.exe' = @{
-        Name='Brave Browser'
-        File='BraveBrowserSetup.exe'
-        Command='&' # Comando para ejecutar el .exe directamente ( & <file.exe> /silent)
-        Arguments='/silent /install' # Parámetros silenciosos para Brave
+    # 2. Banner de Bienvenida y Firma
+    Clear-Host
+    Write-Host "=========================================================" -ForegroundColor Cyan
+    Write-Host "             ✨ PAQUETE DE INSTALACIÓN PERSONALIZADO ✨" -ForegroundColor Yellow
+    Write-Host "=========================================================" -ForegroundColor Cyan
+    Write-Host "   Cargado por: https://github.com/santiagobravo00" -ForegroundColor Green
+    Write-Host "---------------------------------------------------------" -ForegroundColor DarkGray
+    Write-Host " "
+
+    # --- Definición de Aplicaciones ---
+    $AppList = @{
+        # Google Chrome (Versión Estándar/Standalone)
+        'https://dl.google.com/chrome/install/standalonesetup.exe' = @{
+            Name='Google Chrome (Standard)'
+            File='ChromeSetup.exe'
+            # Argumentos silenciosos comunes para el instalador EXE de Chrome
+            Arguments='/silent /install' 
+        }
+        
+        # Brave Browser (Instalador Standalone)
+        'https://referrals.brave.com/latest/BraveBrowserSetup-Standalone.exe' = @{
+            Name='Brave Browser'
+            File='BraveBrowserSetup.exe'
+            # Argumentos silenciosos comunes para el instalador EXE de Brave
+            Arguments='/silent /install' 
+        }
     }
-    
-    # Ejemplo de 7-Zip (EXE)
-    #'https://www.7-zip.org/a/7z2301-x64.exe' = @{
-    #    Name='7-Zip'
-    #    File='7zSetup.exe'
-    #    Command='&'
-    #    Arguments='/S' # Parámetros silenciosos (el /S es común para EXE)
-    #}
-}
 
-# --- Lógica Principal del Script ---
-
-# Obtenemos las URLs de descarga que usaremos como identificadores únicos
-$ApplicationIDs = $AppList.Keys | Sort-Object
-
-while ($true) {
-    # Creamos un Hashtable temporal solo con nombres amigables para el menú
+    # Lógica de menú y ejecución
     $FriendlyNames = @{}
     $AppList.GetEnumerator() | ForEach-Object { $FriendlyNames[$_.Key] = $_.Value.Name }
+    $ApplicationUrls = $AppList.Keys | Sort-Object
 
-    $Selection = Show-Menu -Applications $FriendlyNames
+    while ($true) {
+        $Selection = Show-Menu -Applications $FriendlyNames
 
-    if ($Selection -eq 'S' -or $Selection -eq 's') {
-        Write-Host "👋 Saliendo del script. ¡Hasta pronto!" -ForegroundColor Red
-        break
-    }
-    
-    # Procesar selección (A, o números)
-    $AppsToInstallUrls = @()
-    if ($Selection -eq 'A' -or $Selection -eq 'a') {
-        $AppsToInstallUrls = $ApplicationIDs
-        Write-Host "🚀 Opción seleccionada: Instalar todas las aplicaciones." -ForegroundColor Green
-    } 
-    elseif ($Selection -match '^\s*[\d,]+\s*$') {
-        $Indices = $Selection -split ',' | ForEach-Object { [int]$_.Trim() }
+        if ($Selection -eq 'S' -or $Selection -eq 's') {
+            Write-Host "👋 Saliendo del script. ¡Hasta pronto!" -ForegroundColor Red
+            break
+        }
         
-        foreach ($Index in $Indices) {
-            if ($Index -ge 1 -and $Index -le $ApplicationIDs.Count) {
-                $AppsToInstallUrls += $ApplicationIDs[$Index - 1]
+        $AppsToInstallUrls = @()
+        if ($Selection -eq 'A' -or $Selection -eq 'a') {
+            $AppsToInstallUrls = $ApplicationUrls
+        } 
+        elseif ($Selection -match '^\s*[\d,]+\s*$') {
+            $Indices = $Selection -split ',' | ForEach-Object { [int]$_.Trim() }
+            foreach ($Index in $Indices) {
+                if ($Index -ge 1 -and $Index -le $ApplicationUrls.Count) {
+                    $AppsToInstallUrls += $ApplicationUrls[$Index - 1]
+                }
             }
         }
         
@@ -153,30 +150,28 @@ while ($true) {
             Write-Host "❌ Selección no válida. Por favor, intenta de nuevo." -ForegroundColor Red
             continue
         }
-        
-        $SelectedNames = $AppsToInstallUrls | ForEach-Object { $AppList[$_].Name }
-        Write-Host "🚀 Opción seleccionada: $($SelectedNames -join ', ')" -ForegroundColor Green
-    }
-    else {
-        Write-Host "❌ Opción no válida. Por favor, intenta de nuevo." -ForegroundColor Red
-        continue
-    }
 
-    Write-Host ""
-    # Ejecutar la instalación
-    foreach ($Url in $AppsToInstallUrls) {
-        $AppInfo = $AppList[$Url]
-        $ArgumentString = "$($AppInfo.Command) `"$($DownloadPath)`" $($AppInfo.Arguments)"
-        
-        # Llamamos a la función con la información de descarga y el comando completo
-        Install-Application -DownloadUrl $Url `
-                            -FriendlyName $AppInfo.Name `
-                            -InstallerFileName $AppInfo.File `
-                            -InstallCommand "$($AppInfo.Command) $($AppInfo.Arguments)"
-    }
+        Write-Host " "
+        # Ejecutar la instalación
+        foreach ($Url in $AppsToInstallUrls) {
+            $AppInfo = $AppList[$Url]
+            Invoke-SilentInstall -DownloadUrl $Url `
+                                 -FriendlyName $AppInfo.Name `
+                                 -InstallerFileName $AppInfo.File `
+                                 -InstallArguments $AppInfo.Arguments
+        }
 
-    Write-Host ""
-    Read-Host "Presiona **Enter** para volver al menú o **Ctrl+C** para salir."
+        Write-Host " "
+        Read-Host "Presiona **Enter** para volver al menú o **Ctrl+C** para salir."
+    }
 }
 
-# --- Fin del Script ---
+# Ejecuta la función principal
+if ($MyInvocation.MyCommand.Path) {
+    Start-InstallerPacks
+} else {
+    Write-Host " "
+    Write-Host "⚠️ ADVERTENCIA: Ejecutar con 'irm | iex' no permite la auto-elevación. Debe ejecutar PowerShell COMO ADMINISTRADOR primero." -ForegroundColor Yellow
+    Write-Host " "
+    Start-InstallerPacks
+}
